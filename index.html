@@ -385,6 +385,29 @@
             box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
         }
 
+        /* Secondary button style for sort controls */
+        .sort-btn {
+            background: rgba(45, 45, 45, 0.85);
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 8px 14px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+
+        .sort-btn:hover {
+            background: rgba(60, 60, 60, 0.9);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .sort-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
         .image-preview-clickable {
             cursor: pointer;
             transition: all 0.2s ease;
@@ -499,6 +522,30 @@
                             <option value="portrait">Portrait</option>
                             <option value="landscape">Landscape</option>
                         </select>
+                    </div>
+                    <div class="settings-row">
+                        <label>Image Fit:</label>
+                        <select id="imageFit">
+                            <option value="contain" selected>Contain (preserve aspect)</option>
+                            <option value="cover">Cover (edge-to-edge, may crop)</option>
+                            <option value="fitWidth">Fit width</option>
+                            <option value="fitHeight">Fit height</option>
+                            <option value="stretch">Stretch (fill page)</option>
+                        </select>
+                    </div>
+                    <div class="settings-row">
+                        <label>Margin (mm):</label>
+                        <input type="number" id="imageMargin" value="10" min="0" step="1">
+                    </div>
+                    <div class="settings-row">
+                        <label>Sort:</label>
+                        <div class="modal-controls">
+                            <button class="sort-btn" id="sortNameAsc">Name ▲</button>
+                            <button class="sort-btn" id="sortNameDesc">Name ▼</button>
+                            <button class="sort-btn" id="sortDateAsc">Date ▲</button>
+                            <button class="sort-btn" id="sortDateDesc">Date ▼</button>
+                            <span id="sortLoading" style="display:none; color:#b0b0b0; margin-left:10px;">Sorting…</span>
+                        </div>
                     </div>
                     <div class="settings-row">
                         <label>Quality:</label>
@@ -811,33 +858,37 @@
         // Image to PDF functionality
         document.getElementById('imageInput').addEventListener('change', function(e) {
             selectedImages = [];
-            const files = Array.from(e.target.files);
+            const files = Array.from(e.target.files); // keep raw order; user can sort with buttons
             const container = document.getElementById('imagePreviewContainer');
             container.innerHTML = '';
             
             if (files.length > 0) {
                 container.style.display = 'grid';
                 document.getElementById('convertImagesToPdf').disabled = false;
-                
+
+                // Pre-allocate selectedImages to preserve picker order
                 files.forEach((file, index) => {
+                    selectedImages[index] = { file: file, dataUrl: null, index: index };
+
+                    // Create preview immediately in the correct position
+                    const preview = document.createElement('div');
+                    preview.className = 'image-preview image-preview-clickable';
+                    preview.dataset.index = index;
+                    preview.innerHTML = `
+                        <img src="" alt="Preview">
+                        <button class="remove-btn" onclick="removeImage(${index}); event.stopPropagation();">×</button>
+                        <div class="order-number">${index + 1}</div>
+                        <div class="preview-click-hint">👁️ View</div>
+                    `;
+                    container.appendChild(preview);
+
+                    const imgTag = preview.querySelector('img');
+
                     const reader = new FileReader();
-                    reader.onload = function(e) {
-                        selectedImages.push({
-                            file: file,
-                            dataUrl: e.target.result,
-                            index: index
-                        });
-                        
-                        const preview = document.createElement('div');
-                        preview.className = 'image-preview image-preview-clickable';
-                        preview.dataset.index = index;
-                        preview.innerHTML = `
-                            <img src="${e.target.result}" alt="Preview" onclick="openImageModal('${e.target.result}', '${file.name}', ${index + 1})">
-                            <button class="remove-btn" onclick="removeImage(${index}); event.stopPropagation();">×</button>
-                            <div class="order-number">${index + 1}</div>
-                            <div class="preview-click-hint">👁️ View</div>
-                        `;
-                        container.appendChild(preview);
+                    reader.onload = function(ev) {
+                        selectedImages[index].dataUrl = ev.target.result;
+                        imgTag.src = ev.target.result;
+                        imgTag.setAttribute('onclick', `openImageModal('${ev.target.result}', '${file.name}', ${index + 1})`);
                     };
                     reader.readAsDataURL(file);
                 });
@@ -858,6 +909,73 @@
                 document.getElementById('convertImagesToPdf').disabled = true;
             }
         });
+
+        // Sort controls
+        document.getElementById('sortNameAsc').addEventListener('click', function() {
+            sortSelectedImages((a, b) => a.file.name.localeCompare(b.file.name));
+        });
+        document.getElementById('sortNameDesc').addEventListener('click', function() {
+            sortSelectedImages((a, b) => b.file.name.localeCompare(a.file.name));
+        });
+        document.getElementById('sortDateAsc').addEventListener('click', function() {
+            sortSelectedImages((a, b) => (a.file.lastModified || 0) - (b.file.lastModified || 0));
+        });
+        document.getElementById('sortDateDesc').addEventListener('click', function() {
+            sortSelectedImages((a, b) => (b.file.lastModified || 0) - (a.file.lastModified || 0));
+        });
+
+        function renderImagePreviews() {
+            const container = document.getElementById('imagePreviewContainer');
+            container.innerHTML = '';
+            if (selectedImages.length === 0) return;
+            selectedImages.forEach((img, index) => {
+                const preview = document.createElement('div');
+                preview.className = 'image-preview image-preview-clickable';
+                preview.dataset.index = img.index;
+                preview.innerHTML = `
+                    <img src="${img.dataUrl || ''}" alt="Preview" ${img.dataUrl ? `onclick=\"openImageModal('${img.dataUrl}','${img.file.name}', ${index + 1})\"` : ''}>
+                    <button class="remove-btn" onclick="removeImage(${img.index}); event.stopPropagation();">×</button>
+                    <div class="order-number">${index + 1}</div>
+                    <div class="preview-click-hint">👁️ View</div>
+                `;
+                container.appendChild(preview);
+            });
+            // Re-init sortable after rerender
+            new Sortable(container, {
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                chosenClass: 'sortable-chosen',
+                onEnd: function(evt) {
+                    updateImageOrder();
+                }
+            });
+        }
+
+        function sortSelectedImages(comparator) {
+            const sortBtns = [
+                document.getElementById('sortNameAsc'),
+                document.getElementById('sortNameDesc'),
+                document.getElementById('sortDateAsc'),
+                document.getElementById('sortDateDesc')
+            ];
+            const loading = document.getElementById('sortLoading');
+            try {
+                sortBtns.forEach(b => b.disabled = true);
+                loading.style.display = 'inline';
+                // Allow UI to paint loading indicator
+                setTimeout(() => {
+                    selectedImages.sort(comparator);
+                    // Reassign sequential indices for stable remove handling and display
+                    selectedImages = selectedImages.map((img, idx) => ({ ...img, index: idx }));
+                    renderImagePreviews();
+                    sortBtns.forEach(b => b.disabled = false);
+                    loading.style.display = 'none';
+                }, 0);
+            } catch (e) {
+                sortBtns.forEach(b => b.disabled = false);
+                loading.style.display = 'none';
+            }
+        }
 
         function removeImage(index) {
             selectedImages = selectedImages.filter(img => img.index !== index);
@@ -891,7 +1009,9 @@
                 // Update modal click handler with new order number
                 const img = preview.querySelector('img');
                 const fileName = image ? image.file.name : 'Unknown';
-                img.setAttribute('onclick', `openImageModal('${img.src}', '${fileName}', ${index + 1})`);
+                if (img && image && image.dataUrl) {
+                    img.setAttribute('onclick', `openImageModal('${image.dataUrl}', '${fileName}', ${index + 1})`);
+                }
             });
             
             selectedImages = newOrder;
@@ -916,7 +1036,9 @@
                 
                 const pageWidth = pdf.internal.pageSize.getWidth();
                 const pageHeight = pdf.internal.pageSize.getHeight();
-                const margin = 10;
+                const fitMode = document.getElementById('imageFit').value;
+                const marginInput = parseFloat(document.getElementById('imageMargin').value || '0');
+                const margin = Math.max(0, marginInput);
                 
                 for (let i = 0; i < selectedImages.length; i++) {
                     updateProgress('imageProgress', 10 + (i / selectedImages.length) * 80);
@@ -933,17 +1055,44 @@
                         imgElement.onload = () => {
                             const imgWidth = imgElement.width;
                             const imgHeight = imgElement.height;
-                            const ratio = Math.min(
-                                (pageWidth - 2 * margin) / imgWidth,
-                                (pageHeight - 2 * margin) / imgHeight
-                            );
-                            
-                            const scaledWidth = imgWidth * ratio;
-                            const scaledHeight = imgHeight * ratio;
-                            const x = (pageWidth - scaledWidth) / 2;
-                            const y = (pageHeight - scaledHeight) / 2;
-                            
-                            pdf.addImage(img.dataUrl, 'JPEG', x, y, scaledWidth, scaledHeight);
+
+                            let drawWidth;
+                            let drawHeight;
+
+                            const availableWidth = Math.max(0, pageWidth - 2 * margin);
+                            const availableHeight = Math.max(0, pageHeight - 2 * margin);
+
+                            if (fitMode === 'stretch') {
+                                drawWidth = availableWidth;
+                                drawHeight = availableHeight;
+                            } else if (fitMode === 'fitWidth') {
+                                const ratio = availableWidth / imgWidth;
+                                drawWidth = availableWidth;
+                                drawHeight = imgHeight * ratio;
+                            } else if (fitMode === 'fitHeight') {
+                                const ratio = availableHeight / imgHeight;
+                                drawWidth = imgWidth * ratio;
+                                drawHeight = availableHeight;
+                            } else if (fitMode === 'cover') {
+                                const ratio = Math.max(
+                                    availableWidth / imgWidth,
+                                    availableHeight / imgHeight
+                                );
+                                drawWidth = imgWidth * ratio;
+                                drawHeight = imgHeight * ratio;
+                            } else { // 'contain'
+                                const ratio = Math.min(
+                                    availableWidth / imgWidth,
+                                    availableHeight / imgHeight
+                                );
+                                drawWidth = imgWidth * ratio;
+                                drawHeight = imgHeight * ratio;
+                            }
+
+                            const x = (pageWidth - drawWidth) / 2;
+                            const y = (pageHeight - drawHeight) / 2;
+
+                            pdf.addImage(img.dataUrl, 'JPEG', x, y, drawWidth, drawHeight);
                             resolve();
                         };
                     });
