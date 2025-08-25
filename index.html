@@ -548,16 +548,37 @@
                         </div>
                     </div>
                     <div class="settings-row">
+                        <label>Image Format:</label>
+                        <select id="imageFormat">
+                            <option value="auto" selected>Auto</option>
+                            <option value="jpeg">JPEG</option>
+                            <option value="png">PNG</option>
+                        </select>
+                    </div>
+                    <div class="settings-row">
                         <label>Quality:</label>
                         <select id="quality">
-                            <option value="high">High</option>
-                            <option value="medium" selected>Medium</option>
-                            <option value="low">Low</option>
+                            <option value="high">High (≈0.85)</option>
+                            <option value="medium" selected>Medium (≈0.6)</option>
+                            <option value="low">Low (≈0.35)</option>
+                        </select>
+                    </div>
+                    <div class="settings-row">
+                        <label>Max Resolution:</label>
+                        <select id="maxResolution">
+                            <option value="original" selected>Original</option>
+                            <option value="4096">4096 px</option>
+                            <option value="2048">2048 px</option>
+                            <option value="1024">1024 px</option>
                         </select>
                     </div>
                 </div>
                 
-                <button class="btn" id="convertImagesToPdf" disabled>Convert to PDF</button>
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                    <button class="btn" id="convertImagesToPdf" disabled style="flex:1 1 260px;">Convert to PDF</button>
+                    <button class="sort-btn" id="estimateSizeBtn" style="flex:0 0 auto; height:52px; align-self:flex-end;">Estimate Size</button>
+                </div>
+                <div id="estimateInfo" style="margin-top:8px; color:#b0b0b0; font-size:0.95rem; display:none;"></div>
                 <div class="progress-bar" id="imageProgress">
                     <div class="progress-fill"></div>
                 </div>
@@ -757,6 +778,51 @@
             URL.revokeObjectURL(url);
         }
 
+        async function estimatePdfSizeFromImages(images, options) {
+            // Rough estimate by re-encoding each image per current settings and summing bytes,
+            // plus a small PDF overhead per page.
+            const overheadPerPage = 1500; // bytes (very rough)
+            let totalBytes = 0;
+            for (let i = 0; i < images.length; i++) {
+                const img = images[i];
+                const imgElement = new Image();
+                imgElement.src = img.dataUrl;
+                await new Promise(resolve => { imgElement.onload = resolve; });
+
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+
+                let targetWidth = imgElement.width;
+                let targetHeight = imgElement.height;
+                const maxDim = options.maxResolution === 'original' ? Number.MAX_SAFE_INTEGER : parseInt(options.maxResolution);
+                if (Number.isFinite(maxDim) && (targetWidth > maxDim || targetHeight > maxDim)) {
+                    const scale = Math.min(maxDim / targetWidth, maxDim / targetHeight);
+                    targetWidth = Math.max(1, Math.round(targetWidth * scale));
+                    targetHeight = Math.max(1, Math.round(targetHeight * scale));
+                }
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+                ctx.imageSmoothingEnabled = true;
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(imgElement, 0, 0, targetWidth, targetHeight);
+
+                const q = options.quality === 'high' ? 0.85 : options.quality === 'medium' ? 0.6 : 0.35;
+                let outMime = 'image/jpeg';
+                if (options.imageFormat === 'png') outMime = 'image/png';
+                else if (options.imageFormat === 'auto') {
+                    const seemsPng = img.file && (/\.png$/i.test(img.file.name));
+                    outMime = seemsPng ? 'image/png' : 'image/jpeg';
+                } else if (options.imageFormat === 'jpeg') outMime = 'image/jpeg';
+
+                const dataUrl = canvas.toDataURL(outMime, outMime === 'image/jpeg' ? q : undefined);
+                // Convert base64 to bytes length
+                const base64 = dataUrl.split(',')[1] || '';
+                const bytes = Math.ceil((base64.length * 3) / 4) - (base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0);
+                totalBytes += bytes + overheadPerPage;
+            }
+            return totalBytes;
+        }
+
         // Modal functionality
         let currentZoom = 1;
         
@@ -910,6 +976,36 @@
             }
         });
 
+        // Estimate size
+        document.getElementById('estimateSizeBtn').addEventListener('click', async function() {
+            const btn = this;
+            const info = document.getElementById('estimateInfo');
+            if (selectedImages.length === 0) {
+                info.style.display = 'block';
+                info.textContent = 'No images selected.';
+                return;
+            }
+            btn.disabled = true;
+            info.style.display = 'block';
+            info.textContent = 'Estimating…';
+            const options = {
+                quality: document.getElementById('quality').value,
+                imageFormat: document.getElementById('imageFormat').value,
+                maxResolution: document.getElementById('maxResolution').value
+            };
+            try {
+                // Yield to paint
+                await new Promise(r => setTimeout(r, 0));
+                const totalBytes = await estimatePdfSizeFromImages(selectedImages, options);
+                const mb = (totalBytes / (1024 * 1024)).toFixed(2);
+                info.textContent = `Estimated PDF size: ${mb} MB`;
+            } catch (e) {
+                info.textContent = 'Failed to estimate size.';
+            } finally {
+                btn.disabled = false;
+            }
+        });
+
         // Sort controls
         document.getElementById('sortNameAsc').addEventListener('click', function() {
             sortSelectedImages((a, b) => a.file.name.localeCompare(b.file.name));
@@ -1027,6 +1123,8 @@
                 const pageSize = document.getElementById('pageSize').value;
                 const orientation = document.getElementById('orientation').value;
                 const quality = document.getElementById('quality').value;
+                const imageFormatPref = document.getElementById('imageFormat').value; // auto/jpeg/png
+                const maxResolution = document.getElementById('maxResolution').value;
                 
                 const pdf = new jsPDF({
                     orientation: orientation,
@@ -1055,6 +1153,36 @@
                         imgElement.onload = () => {
                             const imgWidth = imgElement.width;
                             const imgHeight = imgElement.height;
+
+                            // Prepare canvas for optional downscale and re-encode
+                            const canvas = document.createElement('canvas');
+                            const ctx = canvas.getContext('2d');
+
+                            let targetWidth = imgWidth;
+                            let targetHeight = imgHeight;
+                            const maxDim = maxResolution === 'original' ? Number.MAX_SAFE_INTEGER : parseInt(maxResolution);
+                            if (Number.isFinite(maxDim) && (imgWidth > maxDim || imgHeight > maxDim)) {
+                                const scale = Math.min(maxDim / imgWidth, maxDim / imgHeight);
+                                targetWidth = Math.max(1, Math.round(imgWidth * scale));
+                                targetHeight = Math.max(1, Math.round(imgHeight * scale));
+                            }
+
+                            canvas.width = targetWidth;
+                            canvas.height = targetHeight;
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+                            ctx.drawImage(imgElement, 0, 0, targetWidth, targetHeight);
+
+                            const q = quality === 'high' ? 0.85 : quality === 'medium' ? 0.6 : 0.35;
+                            let outMime = 'image/jpeg';
+                            if (imageFormatPref === 'png') outMime = 'image/png';
+                            else if (imageFormatPref === 'auto') {
+                                // Heuristic: if original seems like PNG with alpha or small palette, keep PNG; else JPEG
+                                const seemsPng = img.file && (/\.png$/i.test(img.file.name));
+                                outMime = seemsPng ? 'image/png' : 'image/jpeg';
+                            } else if (imageFormatPref === 'jpeg') outMime = 'image/jpeg';
+
+                            const encodedDataUrl = canvas.toDataURL(outMime, outMime === 'image/jpeg' ? q : undefined);
 
                             let drawWidth;
                             let drawHeight;
@@ -1092,7 +1220,8 @@
                             const x = (pageWidth - drawWidth) / 2;
                             const y = (pageHeight - drawHeight) / 2;
 
-                            pdf.addImage(img.dataUrl, 'JPEG', x, y, drawWidth, drawHeight);
+                            const addFormat = outMime === 'image/png' ? 'PNG' : 'JPEG';
+                            pdf.addImage(encodedDataUrl, addFormat, x, y, drawWidth, drawHeight);
                             resolve();
                         };
                     });
